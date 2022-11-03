@@ -17,6 +17,7 @@ limitations under the License.
 package admission
 
 import (
+	"github.com/kcp-dev/kcp/pkg/admission/customadmission"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/admission/plugin/namespace/lifecycle"
@@ -64,6 +65,7 @@ import (
 // AllOrderedPlugins is the list of all the plugins in order.
 var AllOrderedPlugins = beforeWebhooks(kubeapiserveroptions.AllOrderedPlugins,
 	workspacenamespacelifecycle.PluginName,
+	customadmission.PluginName,
 	apiresourceschema.PluginName,
 	clusterworkspace.PluginName,
 	clusterworkspacefinalizer.PluginName,
@@ -105,6 +107,7 @@ func RegisterAllKcpAdmissionPlugins(plugins *admission.Plugins) {
 	clusterworkspaceshard.Register(plugins)
 	clusterworkspacetype.Register(plugins)
 	clusterworkspacetypeexists.Register(plugins)
+	customadmission.Register(plugins)
 	apiresourceschema.Register(plugins)
 	apiexport.Register(plugins)
 	apibinding.Register(plugins)
@@ -128,7 +131,7 @@ var defaultOnPluginsInKcp = sets.NewString(
 	certapproval.PluginName,                // CertificateApproval
 	certsigning.PluginName,                 // CertificateSigning
 	certsubjectrestriction.PluginName,      // CertificateSubjectRestriction
-
+	customadmission.PluginName,             // custom admission entitlement check
 	// KCP
 	clusterworkspace.PluginName,
 	clusterworkspacefinalizer.PluginName,
