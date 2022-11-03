@@ -66,20 +66,22 @@ func (o2 *CustomAdmission) Admit(ctx context.Context, a admission.Attributes, o 
 	// HACBS and ASPIAN - Pipeline Kind
 	if isPresentInArray("org/aspian", user.GetGroups()) {
 		if a.GetKind().Kind == "Pipeline" {
-			if aspianHACBSQuota == 0 {
+			if aspianHACBSQuota <= 0 {
 				err = field.Invalid(field.NewPath("metadata", "labels"), "Custom admission Controller: Forbidden. Quota check failed", "Not enough quota available")
+			} else {
+				aspianHACBSQuota = aspianHACBSQuota - 1 //Reduce the quota by 1
 			}
-			aspianHACBSQuota = aspianHACBSQuota - 1 //Reduce the quota by 1
 		}
 	}
 
 	// App-Studio and BSPAIN - App Kind
 	if isPresentInArray("org/bspian", user.GetGroups()) {
 		if a.GetKind().Kind == "App" {
-			if bspainAppStudioQuota == 0 { //No Quota available
+			if bspainAppStudioQuota <= 0 { //No Quota available
 				err = field.Invalid(field.NewPath("metadata", "labels"), "Custom admission Controller: Forbidden. Quota check failed", "Not enough quota available")
+			} else {
+				bspainAppStudioQuota = bspainAppStudioQuota - 1 //Reduce the quota by 1
 			}
-			bspainAppStudioQuota = bspainAppStudioQuota - 1 //Reduce the quota by 1
 		}
 	}
 	if err != nil {
