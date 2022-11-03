@@ -14,7 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/admission"
-	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/tools/cache"
 
@@ -26,8 +25,8 @@ const (
 	PluginName = "apis.kcp.dev/CustomAdmission"
 )
 
-var aspianHACBSBindQuota = 5
-var bspainAppStudioBindQuota = 5
+var aspianHACBSQuota = 1
+var bspainAppStudioQuota = 1
 
 // Register registers the reserved metadata plugin for creation and updates.
 // Deletion and connect operations are not relevant as not object changes are expected here.
@@ -56,59 +55,36 @@ func (o2 *CustomAdmission) Admit(ctx context.Context, a admission.Attributes, o 
 		return nil
 	}
 
-	u, ok := a.GetObject().(metav1.Object)
+	_, ok := a.GetObject().(metav1.Object)
 	if !ok {
 		return fmt.Errorf("got type %T, expected metav1.Object", a.GetObject())
 	}
-	if !ok {
-		return fmt.Errorf("got type %T, expected metav1.Object", a.GetObject())
-	}
-	fmt.Println(u.GetName())
-	clusterName, err := genericapirequest.ClusterNameFrom(ctx)
+	//clusterName, err := genericapirequest.ClusterNameFrom(ctx)
 
 	user := a.GetUserInfo()
-	fmt.Println(user)
-	user.GetGroups()
 
-	fmt.Println(aspianHACBSBindQuota)
-	fmt.Println(bspainAppStudioBindQuota)
-
-	// HACBS and ASPIAN
-	if isPresentInArray("aspian", user.GetGroups()) {
-		if u.GetName() == "hacbs" {
-			if aspianHACBSBindQuota == 0 {
-				err = field.Invalid(field.NewPath("metadata", "labels"), "custom admission for Quota forbidden for data my domain. No quota available", fmt.Sprintf("must be %q", " No quota available"))
+	// HACBS and ASPIAN - Pipeline Kind
+	if isPresentInArray("org/aspian", user.GetGroups()) {
+		if a.GetKind().Kind == "Pipeline" {
+			if aspianHACBSQuota == 0 {
+				err = field.Invalid(field.NewPath("metadata", "labels"), "Custom admission Controller: Forbidden. Quota check failed", "Not enough quota available")
 			}
-			aspianHACBSBindQuota = aspianHACBSBindQuota - 1 //Reduce the quota by 1
+			aspianHACBSQuota = aspianHACBSQuota - 1 //Reduce the quota by 1
 		}
 	}
 
-	// App-Studio and BSPAIN
-	if isPresentInArray("bspian", user.GetGroups()) {
-		if u.GetName() == "appstudio" {
-			if bspainAppStudioBindQuota == 0 { //No Quota available
-				err = field.Invalid(field.NewPath("metadata", "labels"), "custom admission for Quota forbidden for data my domain. No quota available", fmt.Sprintf("must be %q", " No quota available"))
+	// App-Studio and BSPAIN - App Kind
+	if isPresentInArray("org/bspian", user.GetGroups()) {
+		if a.GetKind().Kind == "App" {
+			if bspainAppStudioQuota == 0 { //No Quota available
+				err = field.Invalid(field.NewPath("metadata", "labels"), "Custom admission Controller: Forbidden. Quota check failed", "Not enough quota available")
 			}
-			bspainAppStudioBindQuota = bspainAppStudioBindQuota - 1 //Reduce the quota by 1
+			bspainAppStudioQuota = bspainAppStudioQuota - 1 //Reduce the quota by 1
 		}
 	}
-
-	// if user.GetName() == "ben" {
-	// 	err = field.Invalid(field.NewPath("metadata", "labels"), "custom admission forbidden for data my domain no entitlement present", fmt.Sprintf("must be %q", "no entitlement found "))
-	// 	return err
-	// }
-
 	if err != nil {
 		return err
 	}
-	fmt.Println(a.GetUserInfo().GetName())
-	fmt.Println(a.GetUserInfo().GetGroups())
-	if u.GetName() == "data.my.domain" {
-		err = field.Invalid(field.NewPath("metadata", "labels"), "custom admission forbidden for data my domain no entitlement present", fmt.Sprintf("must be %q", "no entitlement found "))
-		return err
-	}
-	fmt.Println(clusterName)
-
 	return nil
 }
 
