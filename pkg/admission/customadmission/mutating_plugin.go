@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"k8s.io/apiserver/pkg/authentication/user"
@@ -17,22 +18,24 @@ import (
 	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/tools/cache"
 
+	"github.com/kcp-dev/kcp/pkg/apis/apis/v1alpha1"
 	apisv1alpha1 "github.com/kcp-dev/kcp/pkg/apis/apis/v1alpha1"
 	kcpinformers "github.com/kcp-dev/kcp/pkg/client/informers/externalversions"
+	"github.com/kcp-dev/kcp/pkg/indexers"
 )
 
 const (
 	PluginName = "apis.kcp.dev/CustomAdmission"
 )
 
-var aspianHACBSQuota = 1
-var bspainAppStudioQuota = 1
+var aspianHACBSUsedQuota = 0
+var bspianAppStudioUsedQuota = 0
 
 // Register registers the reserved metadata plugin for creation and updates.
 // Deletion and connect operations are not relevant as not object changes are expected here.
 func Register(plugins *admission.Plugins) {
 	plugins.Register(PluginName,
-		func(_ io.Reader) (admission.Interface, error) {
+		func(config io.Reader) (admission.Interface, error) {
 			return NewMutatingPCustomAdmission(), nil
 		})
 }
@@ -44,13 +47,13 @@ var _ admission.InitializationValidator = &CustomAdmission{}
 
 type CustomAdmission struct {
 	*admission.Handler
-
+	entitlementIndexer      cache.Indexer
 	metadataClient          metadata.Interface
 	apiBindingsHasSynced    cache.InformerSynced
 	apiEntitlementHasSynced cache.InformerSynced
 }
 
-func (o2 *CustomAdmission) Admit(ctx context.Context, a admission.Attributes, o admission.ObjectInterfaces) (err error) {
+func (m *CustomAdmission) Admit(ctx context.Context, a admission.Attributes, o admission.ObjectInterfaces) (err error) {
 	if a.GetSubresource() != "" {
 		return nil
 	}
@@ -59,31 +62,55 @@ func (o2 *CustomAdmission) Admit(ctx context.Context, a admission.Attributes, o 
 	if !ok {
 		return fmt.Errorf("got type %T, expected metav1.Object", a.GetObject())
 	}
-	//clusterName, err := genericapirequest.ClusterNameFrom(ctx)
 
 	user := a.GetUserInfo()
+	org := getTenantId(user)
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+	if org != "" {
+		consumerCluster := "root:" + org
+		entitlements, err := m.entitlementIndexer.ByIndex(indexers.ByLogicalCluster, consumerCluster)
+		if err != nil {
+			return err
+		}
+		for _, obj := range entitlements {
+			entitlement := obj.(*v1alpha1.Entitlement)
 
-	// HACBS and ASPIAN - Pipeline Kind
-	if isPresentInArray("org/aspian", user.GetGroups()) {
-		if a.GetKind().Kind == "Pipeline" {
-			if aspianHACBSQuota <= 0 {
-				err = field.Invalid(field.NewPath("metadata", "labels"), "Custom admission Controller: Forbidden. Quota check failed", "Not enough quota available")
-			} else {
-				aspianHACBSQuota = aspianHACBSQuota - 1 //Reduce the quota by 1
+			// TODO - the way we have defined our API resource schema - makes it difficult to tie the
+			// request back to a field in the entitlement. Ideally: a service porovider, service link back to the
+			// entitlement would make the below checks for orgs and kind vanish and we can use the link, to iterate over the
+			// entitlement and tie it back to the request.
+			if isPresentInArray("org/aspian", user.GetGroups()) {
+				if a.GetKind().Kind == "Pipeline" {
+					configuredLimit, _ := strconv.Atoi(entitlement.Spec.QuotaItems[0].Limits)
+					if aspianHACBSUsedQuota < configuredLimit {
+						aspianHACBSUsedQuota++
+					} else {
+						return field.Invalid(field.NewPath("metadata", "labels"), "Custom admission Controller: Forbidden. Quota check failed", "Not enough quota available")
+					}
+				}
 			}
+			// App-Studio and BSPAIN - App Kind
+			// TODO - the way we have defined our API resource schema - makes it difficult to tie the
+			// request back to a field in the entitlement. Ideally: a service porovider, service link back to the
+			// entitlement would make the below checks for orgs and kind vanish and we can use the link, to iterate over the
+			// entitlement and tie it back to the request.
+			if isPresentInArray("org/bspian", user.GetGroups()) {
+				if a.GetKind().Kind == "App" {
+					configuredLimit, _ := strconv.Atoi(entitlement.Spec.QuotaItems[0].Limits)
+					if bspianAppStudioUsedQuota < configuredLimit {
+						bspianAppStudioUsedQuota++
+					} else {
+						return field.Invalid(field.NewPath("metadata", "labels"), "Custom admission Controller: Forbidden. Quota check failed", "Not enough quota available")
+					}
+				}
+			}
+
 		}
 	}
 
-	// App-Studio and BSPAIN - App Kind
-	if isPresentInArray("org/bspian", user.GetGroups()) {
-		if a.GetKind().Kind == "App" {
-			if bspainAppStudioQuota <= 0 { //No Quota available
-				err = field.Invalid(field.NewPath("metadata", "labels"), "Custom admission Controller: Forbidden. Quota check failed", "Not enough quota available")
-			} else {
-				bspainAppStudioQuota = bspainAppStudioQuota - 1 //Reduce the quota by 1
-			}
-		}
-	}
 	if err != nil {
 		return err
 	}
@@ -148,6 +175,7 @@ func (o *CustomAdmission) Validate(ctx context.Context, a admission.Attributes, 
 // SetKcpInformers implements the WantsExternalKcpInformerFactory interface.
 func (m *CustomAdmission) SetKcpInformers(f kcpinformers.SharedInformerFactory) {
 	m.apiBindingsHasSynced = f.Apis().V1alpha1().APIBindings().Informer().HasSynced
+	m.entitlementIndexer = f.Apis().V1alpha1().Entitlements().Informer().GetIndexer()
 }
 
 func (m *CustomAdmission) ValidateInitialization() error {
@@ -161,13 +189,13 @@ func (m *CustomAdmission) SetEntitlements(f kcpinformers.SharedInformerFactory) 
 	m.apiEntitlementHasSynced = f.Apis().V1alpha1().Entitlements().Informer().HasSynced
 }
 
-func getTenantId(usr user.Info) (string, error) {
+func getTenantId(usr user.Info) string {
 	for _, group := range usr.GetGroups() {
 		if strings.HasPrefix(group, "org/") {
-			return group[4:], nil
+			return group[4:]
 		}
 	}
-	return "", errors.New("organization group not found")
+	return ""
 }
 
 func isPresentInArray(input string, arr []string) bool {
